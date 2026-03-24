@@ -1,0 +1,21 @@
+/*!
+Theme Name: Bancobet
+Theme URI: https://lime-agency.io/
+Author: Lime Agency
+Author URI: https://lime-agency.io/
+Description: Bancobet Theme
+Version: 1.0.0
+Text Domain: bancobet
+*/
+
+/* Admin Bar */
+@media (max-width: 600px) {
+    #wpadminbar {
+        position: fixed;
+    }
+}
+
+/* Cards */
+.list-item__logo img {
+    object-fit: contain;
+}
