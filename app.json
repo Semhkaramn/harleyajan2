@@ -13,9 +13,9 @@
       "description": "Telegram API Hash (my.telegram.org)",
       "required": true
     },
-    "SESSION_NAME": {
-      "description": "Session dosya adı (.session uzantısız)",
-      "value": "tracker"
+    "SESSION_STRING": {
+      "description": "Telethon session string (generate_session.py ile oluşturun)",
+      "required": true
     },
     "GROUP_ID": {
       "description": "Takip edilecek grup ID (örn: -1001234567890)",
