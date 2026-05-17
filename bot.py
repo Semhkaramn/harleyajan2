@@ -12,6 +12,7 @@ import asyncio
 import logging
 from datetime import datetime
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Environment Variables
 API_ID = int(os.getenv('API_ID', '0'))
 API_HASH = os.getenv('API_HASH', '')
-SESSION_NAME = os.getenv('SESSION_NAME', 'tracker')  # .session dosya adı
+SESSION_STRING = os.getenv('SESSION_STRING', '')
 GROUP_ID = int(os.getenv('GROUP_ID', '0'))
 NOTIFICATION_GROUP_ID = int(os.getenv('NOTIFICATION_GROUP_ID', '0'))
 DATABASE_URL = os.getenv('DATABASE_URL', '')
@@ -128,7 +129,7 @@ def save_change(user_id: int, change_type: str, old_value: str, new_value: str):
 
 # ==================== TELEGRAM İŞLEMLERİ ====================
 
-client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 async def get_all_participants():
     """Tüm grup üyelerini al (40k+ için optimize)"""
