@@ -1,5 +1,7 @@
 # Environment
 .env
+*.session
+*.session-journal
 
 # Python
 __pycache__/
@@ -19,6 +21,3 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
-
-# Session journal (geçici dosya)
-*.session-journal
