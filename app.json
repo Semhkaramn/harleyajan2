@@ -1,0 +1,52 @@
+{
+  "name": "Telegram Tracker Bot",
+  "description": "Telegram grup üyelerinin kullanıcı adı, isim, soyisim değişikliklerini takip eden bot",
+  "repository": "https://github.com/kullanici/telegram-tracker",
+  "keywords": ["telegram", "bot", "tracker", "telethon"],
+  "stack": "heroku-22",
+  "env": {
+    "API_ID": {
+      "description": "Telegram API ID (my.telegram.org)",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Telegram API Hash (my.telegram.org)",
+      "required": true
+    },
+    "SESSION_NAME": {
+      "description": "Session dosya adı (.session uzantısız)",
+      "value": "tracker"
+    },
+    "GROUP_ID": {
+      "description": "Takip edilecek grup ID (örn: -1001234567890)",
+      "required": true
+    },
+    "NOTIFICATION_GROUP_ID": {
+      "description": "Bildirimlerin gönderileceği grup ID",
+      "required": true
+    },
+    "ADMIN_IDS": {
+      "description": "Admin kullanıcı ID'leri (virgülle ayırın)",
+      "required": true
+    },
+    "DATABASE_URL": {
+      "description": "Neon.tech PostgreSQL bağlantı URL'i",
+      "required": true
+    },
+    "CHECK_INTERVAL_MINUTES": {
+      "description": "Kontrol aralığı (dakika)",
+      "value": "30"
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ]
+}
