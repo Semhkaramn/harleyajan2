@@ -79,12 +79,18 @@ async def get_user_id_from_username(username):
 @client.on(events.ChatAction())
 async def on_chat_action(event):
     global bot_active
+
+    logger.info(f"=== ChatAction geldi === chat_id: {event.chat_id}")
+
     try:
         if not bot_active:
+            logger.info("bot_active=False")
             return
 
         if event.chat_id == NOTIFICATION_GROUP_ID:
             return
+
+        logger.info(f"user_joined={event.user_joined}, user_added={event.user_added}")
 
         user = None
         is_join = False
@@ -93,16 +99,17 @@ async def on_chat_action(event):
         if event.user_joined or event.user_added:
             is_join = True
             user = await event.get_user()
+            logger.info(f"Standart join: user={user.id if user else None}")
 
         # Action message kontrolü (link ile katılım, istek onayı vb.)
         if not user and hasattr(event, 'action_message') and event.action_message:
             action = event.action_message.action
+            logger.info(f"Action tipi: {type(action).__name__}")
             if isinstance(action, (MessageActionChatJoinedByLink, MessageActionChatAddUser, MessageActionChatJoinedByRequest)):
                 is_join = True
                 try:
                     user = await event.get_user()
                 except:
-                    # user_ids'den al
                     if hasattr(action, 'users') and action.users:
                         for uid in action.users:
                             try:
@@ -121,8 +128,10 @@ async def on_chat_action(event):
             except:
                 chat_name = "Bilinmeyen Grup"
 
-            logger.info(f"Yeni üye: {user_name} ({user_id}) - Grup: {chat_name}")
+            logger.info(f">>> Yeni üye sorgulanıyor: {user_name} ({user_id}) - {chat_name}")
             await send_to_sangmata(user_id, chat_name, user_name)
+        else:
+            logger.info(f"Sorgu yapılmadı: is_join={is_join}, user={user}")
 
     except Exception as e:
         logger.error(f"Chat action hatası: {e}")
