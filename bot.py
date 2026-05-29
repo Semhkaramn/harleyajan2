@@ -1,8 +1,5 @@
 """
 SangMata Entegrasyonlu Telegram Kullanıcı Geçmişi Botu
-- Gruba katılan kullanıcıların ID'sini @sangMata_BOT'a gönderir
-- Gelen cevabı BİLDİRİM GRUBUNA iletir
-- ID, @kullaniciadi veya iletilen mesaj ile manuel sorgulama
 """
 
 import os
@@ -10,36 +7,29 @@ import asyncio
 import logging
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import PeerUser, MessageActionChatJoinedByLink, MessageActionChatAddUser, MessageActionChatJoinedByRequest
+from telethon.tl.types import (
+    PeerUser,
+    MessageActionChatJoinedByLink,
+    MessageActionChatAddUser,
+    MessageActionChatJoinedByRequest,
+    MessageService,
+    UpdateNewMessage,
+    UpdateNewChannelMessage
+)
+from telethon import functions
 import re
 
-# Logging ayarları
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Environment Variables
 API_ID = int(os.getenv('API_ID', '0'))
 API_HASH = os.getenv('API_HASH', '')
 SESSION_STRING = os.getenv('SESSION_STRING', '')
-NOTIFICATION_GROUP_ID = os.getenv('NOTIFICATION_GROUP_ID', '0')
+NOTIFICATION_GROUP_ID = int(os.getenv('NOTIFICATION_GROUP_ID', '0'))
 ADMIN_IDS = os.getenv('ADMIN_IDS', '')
 
-# NOTIFICATION_GROUP_ID'yi düzgün parse et
-try:
-    NOTIFICATION_GROUP_ID = int(NOTIFICATION_GROUP_ID)
-except:
-    NOTIFICATION_GROUP_ID = 0
-
-# SangMata Bot
 SANGMATA_BOT = '@sangMata_BOT'
-
-# Bekleyen sorgular
 pending_queries = {}
-
-# Bot durumu
 bot_active = True
 
 def get_admin_ids():
@@ -50,101 +40,125 @@ def get_admin_ids():
     except:
         return []
 
-# Telegram Client
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 async def send_to_sangmata(user_id, source_chat_name=None, user_name=None):
     try:
         pending_queries[user_id] = {
-            "source_chat_name": source_chat_name or "Bilinmiyor",
-            "user_name": user_name or "Bilinmiyor",
+            "source_chat_name": source_chat_name or "",
+            "user_name": user_name or "",
             "timestamp": asyncio.get_event_loop().time()
         }
         await client.send_message(SANGMATA_BOT, str(user_id))
         logger.info(f"SangMata'ya gönderildi: {user_id}")
     except Exception as e:
-        logger.error(f"SangMata'ya gönderme hatası: {e}")
+        logger.error(f"SangMata hatası: {e}")
         pending_queries.pop(user_id, None)
 
-async def get_user_id_from_username(username):
-    try:
-        username = username.lstrip('@')
-        user = await client.get_entity(username)
-        return user.id
-    except Exception as e:
-        logger.error(f"Kullanıcı adı çözümleme hatası: {e}")
-        return None
+# Raw handler - TÜM mesajları yakala
+@client.on(events.Raw())
+async def on_raw(event):
+    global bot_active
 
-# Gruba katılan üyeleri takip (tüm yollar)
+    if not bot_active:
+        return
+
+    try:
+        # Sadece yeni mesaj güncellemelerini al
+        if not isinstance(event, (UpdateNewMessage, UpdateNewChannelMessage)):
+            return
+
+        message = event.message
+
+        # Sadece servis mesajlarını kontrol et (katılım bildirimleri)
+        if not isinstance(message, MessageService):
+            return
+
+        action = message.action
+
+        # Katılım action'larını kontrol et
+        if not isinstance(action, (MessageActionChatJoinedByLink, MessageActionChatAddUser, MessageActionChatJoinedByRequest)):
+            return
+
+        # Chat ID al
+        chat_id = None
+        if hasattr(message, 'peer_id'):
+            if hasattr(message.peer_id, 'channel_id'):
+                chat_id = -1000000000000 - message.peer_id.channel_id
+            elif hasattr(message.peer_id, 'chat_id'):
+                chat_id = -message.peer_id.chat_id
+
+        if chat_id == NOTIFICATION_GROUP_ID:
+            return
+
+        # User ID'leri al
+        user_ids = []
+
+        if isinstance(action, MessageActionChatAddUser):
+            user_ids = action.users
+        elif isinstance(action, (MessageActionChatJoinedByLink, MessageActionChatJoinedByRequest)):
+            if hasattr(message, 'from_id') and message.from_id:
+                if isinstance(message.from_id, PeerUser):
+                    user_ids = [message.from_id.user_id]
+                elif hasattr(message.from_id, 'user_id'):
+                    user_ids = [message.from_id.user_id]
+
+        if not user_ids:
+            return
+
+        # Chat adını al
+        try:
+            chat = await client.get_entity(chat_id)
+            chat_name = getattr(chat, 'title', 'Grup')
+        except:
+            chat_name = "Grup"
+
+        # Her kullanıcı için sorgu yap
+        for uid in user_ids:
+            try:
+                user = await client.get_entity(uid)
+                if user.bot:
+                    continue
+                user_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+            except:
+                user_name = ""
+
+            logger.info(f"Yeni üye: {user_name} ({uid}) - {chat_name}")
+            await send_to_sangmata(uid, chat_name, user_name)
+
+    except Exception as e:
+        logger.error(f"Raw handler hatası: {e}")
+
+# ChatAction da deneyelim (yedek)
 @client.on(events.ChatAction())
 async def on_chat_action(event):
     global bot_active
 
-    try:
-        if not bot_active:
-            return
+    if not bot_active:
+        return
 
+    try:
         if event.chat_id == NOTIFICATION_GROUP_ID:
             return
 
-        users_to_query = []
+        if not (event.user_joined or event.user_added):
+            return
 
-        # 1. user_joined veya user_added
-        if event.user_joined or event.user_added:
-            try:
-                user = await event.get_user()
-                if user and not user.bot:
-                    users_to_query.append((user.id, f"{user.first_name or ''} {user.last_name or ''}".strip()))
-            except:
-                pass
+        user = await event.get_user()
+        if not user or user.bot:
+            return
 
-        # 2. user_ids listesi
-        if not users_to_query and hasattr(event, 'user_ids') and event.user_ids:
-            for uid in event.user_ids:
-                try:
-                    user = await client.get_entity(uid)
-                    if user and not user.bot:
-                        users_to_query.append((user.id, f"{user.first_name or ''} {user.last_name or ''}".strip()))
-                except:
-                    users_to_query.append((uid, ""))
+        chat = await event.get_chat()
+        chat_name = getattr(chat, 'title', 'Grup')
+        user_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
 
-        # 3. action_message içinden
-        if not users_to_query and hasattr(event, 'action_message') and event.action_message:
-            action = event.action_message.action
-            if hasattr(action, 'users') and action.users:
-                for uid in action.users:
-                    try:
-                        user = await client.get_entity(uid)
-                        if user and not user.bot:
-                            users_to_query.append((user.id, f"{user.first_name or ''} {user.last_name or ''}".strip()))
-                    except:
-                        users_to_query.append((uid, ""))
-
-        # 4. event.user_id
-        if not users_to_query and hasattr(event, 'user_id') and event.user_id:
-            try:
-                user = await client.get_entity(event.user_id)
-                if user and not user.bot:
-                    users_to_query.append((user.id, f"{user.first_name or ''} {user.last_name or ''}".strip()))
-            except:
-                users_to_query.append((event.user_id, ""))
-
-        # Sorguları yap
-        if users_to_query:
-            try:
-                chat = await event.get_chat()
-                chat_name = getattr(chat, 'title', 'Grup')
-            except:
-                chat_name = "Grup"
-
-            for user_id, user_name in users_to_query:
-                logger.info(f"Yeni üye: {user_name} ({user_id}) - {chat_name}")
-                await send_to_sangmata(user_id, chat_name, user_name)
+        logger.info(f"ChatAction - Yeni üye: {user_name} ({user.id}) - {chat_name}")
+        await send_to_sangmata(user.id, chat_name, user_name)
 
     except Exception as e:
-        logger.error(f"Chat action hatası: {e}")
+        logger.error(f"ChatAction hatası: {e}")
 
-# SangMata cevaplarını al
+# SangMata cevapları
 @client.on(events.NewMessage(incoming=True))
 async def on_sangmata_response(event):
     try:
@@ -152,46 +166,33 @@ async def on_sangmata_response(event):
             return
 
         sender = await event.get_sender()
-        if not sender:
-            return
-
-        sender_username = getattr(sender, 'username', '') or ''
-        if sender_username.lower() != 'sangmata_bot':
+        if not sender or (getattr(sender, 'username', '') or '').lower() != 'sangmata_bot':
             return
 
         text = event.message.text or ""
         if not text:
             return
 
-        logger.info(f"SangMata'dan mesaj geldi")
+        logger.info("SangMata'dan cevap geldi")
 
         header = ""
         match = re.search(r'(\d{5,15})\s+için geçmiş', text)
         if match:
-            user_id = int(match.group(1))
-            query_info = pending_queries.pop(user_id, None)
+            uid = int(match.group(1))
+            info = pending_queries.pop(uid, None)
+            if info and info.get("source_chat_name") and info["source_chat_name"] != "Manuel Sorgu":
+                header = f"📍 **Grup:** {info['source_chat_name']}\n👤 **Üye:** {info.get('user_name', '')}\n\n"
 
-            if query_info:
-                source_chat_name = query_info.get("source_chat_name", "")
-                user_name = query_info.get("user_name", "")
-
-                if source_chat_name and source_chat_name != "Manuel Sorgu":
-                    header = f"📍 **Grup:** {source_chat_name}\n👤 **Üye:** {user_name}\n\n"
-
-        await client.send_message(
-            NOTIFICATION_GROUP_ID,
-            f"{header}{text}",
-            parse_mode='markdown'
-        )
-        logger.info("SangMata cevabı bildirim grubuna gönderildi")
+        await client.send_message(NOTIFICATION_GROUP_ID, f"{header}{text}", parse_mode='markdown')
 
     except Exception as e:
-        logger.error(f"SangMata cevap işleme hatası: {e}")
+        logger.error(f"SangMata cevap hatası: {e}")
 
-# Manuel sorgulama (ID, @username veya iletilen mesaj)
+# Manuel sorgulama
 @client.on(events.NewMessage())
 async def on_manual_query(event):
     global bot_active
+
     try:
         if event.chat_id != NOTIFICATION_GROUP_ID:
             return
@@ -203,76 +204,53 @@ async def on_manual_query(event):
         if event.sender_id not in get_admin_ids():
             return
 
-        # İletilen mesaj kontrolü
+        # İletilen mesaj
         if event.message.fwd_from:
             fwd = event.message.fwd_from
-            user_id = None
-
             if fwd.from_id and isinstance(fwd.from_id, PeerUser):
-                user_id = fwd.from_id.user_id
-
-            if user_id:
-                logger.info(f"İletilen mesajdan sorgu: {user_id}")
-                await send_to_sangmata(user_id, "Manuel Sorgu", "İletilen mesaj")
+                uid = fwd.from_id.user_id
+                logger.info(f"İletilen mesajdan sorgu: {uid}")
+                await send_to_sangmata(uid, "Manuel Sorgu", "")
             return
 
         text = (event.text or "").strip()
 
-        # /dur komutu - otomatik takibi durdur
         if text == '/dur':
             bot_active = False
-            await event.reply("⏸ Otomatik takip durduruldu.")
+            await event.reply("⏸ Durduruldu")
             return
 
-        # /devam komutu - otomatik takibi başlat
         if text == '/devam':
             bot_active = True
-            await event.reply("▶️ Otomatik takip başlatıldı.")
+            await event.reply("▶️ Devam")
             return
 
         if text.startswith('/'):
             return
 
-        # ID sorgusu
+        # ID
         if re.match(r'^\d{5,15}$', text):
-            user_id = int(text)
-            logger.info(f"Manuel ID sorgusu: {user_id}")
-            await send_to_sangmata(user_id, "Manuel Sorgu", f"ID: {user_id}")
+            await send_to_sangmata(int(text), "Manuel Sorgu", "")
             return
 
-        # Kullanıcı adı sorgusu
+        # @username
         if text.startswith('@') and len(text) > 1:
-            username = text[1:]
-            if re.match(r'^[a-zA-Z][a-zA-Z0-9_]{3,31}$', username):
-                logger.info(f"Manuel kullanıcı adı sorgusu: @{username}")
-                user_id = await get_user_id_from_username(username)
-                if user_id:
-                    await send_to_sangmata(user_id, "Manuel Sorgu", f"@{username}")
+            try:
+                user = await client.get_entity(text)
+                await send_to_sangmata(user.id, "Manuel Sorgu", "")
+            except:
+                pass
             return
 
     except Exception as e:
-        logger.error(f"Manuel sorgulama hatası: {e}")
+        logger.error(f"Manuel sorgu hatası: {e}")
 
-# Eski sorguları temizle
-async def cleanup_old_queries():
-    while True:
-        try:
-            current_time = asyncio.get_event_loop().time()
-            timeout = 300
-            to_remove = [uid for uid, info in pending_queries.items() if current_time - info["timestamp"] > timeout]
-            for uid in to_remove:
-                pending_queries.pop(uid, None)
-        except:
-            pass
-        await asyncio.sleep(60)
-
-# Ana fonksiyon
 async def main():
     logger.info("Bot başlatılıyor...")
     await client.start()
     me = await client.get_me()
-    logger.info(f"Giriş yapıldı: {me.first_name} (@{me.username})")
-    asyncio.create_task(cleanup_old_queries())
+    logger.info(f"Giriş: {me.first_name} (@{me.username}) ID: {me.id}")
+    logger.info(f"Bildirim grubu: {NOTIFICATION_GROUP_ID}")
     logger.info("Bot hazır!")
     await client.run_until_disconnected()
 
