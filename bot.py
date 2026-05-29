@@ -9,7 +9,7 @@ import asyncio
 import logging
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import PeerUser, PeerChannel
+from telethon.tl.types import PeerUser, PeerChannel, InputUserEmpty
 from telethon.tl.functions.messages import GetChatInviteImportersRequest
 import re
 
@@ -52,32 +52,36 @@ async def send_to_sangmata(user_id, source_chat_name=None, user_name=None):
         pending_queries.pop(user_id, None)
 
 # Katılım isteklerini kontrol et
-group_entity = None
 group_name = "Grup"
 
 async def check_join_requests():
-    global bot_active, group_entity, group_name
+    global bot_active, group_name
 
-    # İlk başta entity al
     await asyncio.sleep(2)
+
     try:
-        group_entity = await client.get_entity(GROUP_ID)
-        group_name = getattr(group_entity, 'title', 'Grup')
+        chat = await client.get_entity(GROUP_ID)
+        group_name = getattr(chat, 'title', 'Grup')
         logger.info(f"İstek kontrolü başladı: {group_name}")
     except Exception as e:
-        logger.error(f"Grup entity alınamadı: {e}")
+        logger.error(f"Grup erişim hatası: {e}")
         return
 
     while True:
-        if bot_active and group_entity:
+        if bot_active:
             try:
                 result = await client(GetChatInviteImportersRequest(
-                    peer=group_entity,
+                    peer=GROUP_ID,
                     requested=True,
+                    limit=50,
                     offset_date=None,
-                    offset_user=None,
-                    limit=50
+                    offset_user=InputUserEmpty(),
+                    q=""
                 ))
+
+                count = result.count if hasattr(result, 'count') else len(result.importers)
+                if count > 0:
+                    logger.info(f"Bekleyen istek: {count}")
 
                 for importer in result.importers:
                     user_id = importer.user_id
@@ -93,13 +97,17 @@ async def check_join_requests():
                     except:
                         user_name = ""
 
-                    logger.info(f"Yeni katılım isteği: {user_name} ({user_id})")
+                    logger.info(f"YENİ İSTEK: {user_name} ({user_id})")
                     await send_to_sangmata(user_id, group_name, user_name)
 
             except Exception as e:
-                pass  # Sessiz hata
+                err = str(e)
+                if "CHAT_ADMIN_REQUIRED" in err:
+                    logger.error("Admin yetkisi gerekli!")
+                elif "PEER" not in err:
+                    logger.error(f"Hata: {e}")
 
-        await asyncio.sleep(2)  # 2 saniyede bir kontrol
+        await asyncio.sleep(2)
 
 # SangMata cevapları
 @client.on(events.NewMessage(incoming=True))
