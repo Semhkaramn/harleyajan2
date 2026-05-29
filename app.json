@@ -17,6 +17,10 @@
       "description": "Telethon session string (generate_session.py ile oluşturun)",
       "required": true
     },
+    "NOTIFICATION_GROUP_ID": {
+      "description": "Bildirim grubu ID. Komutlar buradan verilir ve sonuçlar buraya gelir.",
+      "required": true
+    },
     "ADMIN_IDS": {
       "description": "Admin kullanıcı ID'leri (virgülle ayırın). Bu ID'ler botu kontrol edebilir.",
       "required": true
