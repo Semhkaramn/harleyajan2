@@ -10,7 +10,7 @@ import asyncio
 import logging
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.tl.types import PeerUser
+from telethon.tl.types import PeerUser, MessageActionChatJoinedByLink, MessageActionChatAddUser, MessageActionChatJoinedByRequest
 import re
 
 # Logging ayarları
@@ -75,7 +75,7 @@ async def get_user_id_from_username(username):
         logger.error(f"Kullanıcı adı çözümleme hatası: {e}")
         return None
 
-# Gruba katılan üyeleri takip
+# Gruba katılan üyeleri takip (link, davet, istek onayı vb.)
 @client.on(events.ChatAction())
 async def on_chat_action(event):
     global bot_active
@@ -86,20 +86,43 @@ async def on_chat_action(event):
         if event.chat_id == NOTIFICATION_GROUP_ID:
             return
 
+        user = None
+        is_join = False
+
+        # Standart kontroller
         if event.user_joined or event.user_added:
+            is_join = True
             user = await event.get_user()
-            if user and not user.bot:
-                user_id = user.id
-                user_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
 
+        # Action message kontrolü (link ile katılım, istek onayı vb.)
+        if not user and hasattr(event, 'action_message') and event.action_message:
+            action = event.action_message.action
+            if isinstance(action, (MessageActionChatJoinedByLink, MessageActionChatAddUser, MessageActionChatJoinedByRequest)):
+                is_join = True
                 try:
-                    chat = await event.get_chat()
-                    chat_name = getattr(chat, 'title', 'Bilinmeyen Grup')
+                    user = await event.get_user()
                 except:
-                    chat_name = "Bilinmeyen Grup"
+                    # user_ids'den al
+                    if hasattr(action, 'users') and action.users:
+                        for uid in action.users:
+                            try:
+                                user = await client.get_entity(uid)
+                                break
+                            except:
+                                pass
 
-                logger.info(f"Yeni üye: {user_name} ({user_id}) - Grup: {chat_name}")
-                await send_to_sangmata(user_id, chat_name, user_name)
+        if is_join and user and not user.bot:
+            user_id = user.id
+            user_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+
+            try:
+                chat = await event.get_chat()
+                chat_name = getattr(chat, 'title', 'Bilinmeyen Grup')
+            except:
+                chat_name = "Bilinmeyen Grup"
+
+            logger.info(f"Yeni üye: {user_name} ({user_id}) - Grup: {chat_name}")
+            await send_to_sangmata(user_id, chat_name, user_name)
 
     except Exception as e:
         logger.error(f"Chat action hatası: {e}")
