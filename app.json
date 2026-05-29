@@ -1,8 +1,8 @@
 {
-  "name": "Telegram Tracker Bot",
-  "description": "Telegram grup üyelerinin kullanıcı adı, isim, soyisim değişikliklerini takip eden bot",
-  "repository": "https://github.com/kullanici/telegram-tracker",
-  "keywords": ["telegram", "bot", "tracker", "telethon"],
+  "name": "SangMata Telegram Bot",
+  "description": "Telegram grubuna katılan üyelerin geçmişini @sangMata_BOT üzerinden sorgulayan bot",
+  "repository": "https://github.com/Semhkaramn/harleyajan2",
+  "keywords": ["telegram", "bot", "sangmata", "telethon", "userbot"],
   "stack": "heroku-22",
   "env": {
     "API_ID": {
@@ -17,25 +17,9 @@
       "description": "Telethon session string (generate_session.py ile oluşturun)",
       "required": true
     },
-    "GROUP_ID": {
-      "description": "Takip edilecek grup ID (örn: -1001234567890)",
-      "required": true
-    },
-    "NOTIFICATION_GROUP_ID": {
-      "description": "Bildirimlerin gönderileceği grup ID",
-      "required": true
-    },
     "ADMIN_IDS": {
-      "description": "Admin kullanıcı ID'leri (virgülle ayırın)",
+      "description": "Admin kullanıcı ID'leri (virgülle ayırın). Bu ID'ler botu kontrol edebilir.",
       "required": true
-    },
-    "DATABASE_URL": {
-      "description": "Neon.tech PostgreSQL bağlantı URL'i",
-      "required": true
-    },
-    "CHECK_INTERVAL_MINUTES": {
-      "description": "Kontrol aralığı (dakika)",
-      "value": "30"
     }
   },
   "formation": {
