@@ -75,63 +75,71 @@ async def get_user_id_from_username(username):
         logger.error(f"Kullanıcı adı çözümleme hatası: {e}")
         return None
 
-# Gruba katılan üyeleri takip (link, davet, istek onayı vb.)
+# Gruba katılan üyeleri takip (tüm yollar)
 @client.on(events.ChatAction())
 async def on_chat_action(event):
     global bot_active
 
-    logger.info(f"=== ChatAction geldi === chat_id: {event.chat_id}")
-
     try:
         if not bot_active:
-            logger.info("bot_active=False")
             return
 
         if event.chat_id == NOTIFICATION_GROUP_ID:
             return
 
-        logger.info(f"user_joined={event.user_joined}, user_added={event.user_added}")
+        users_to_query = []
 
-        user = None
-        is_join = False
-
-        # Standart kontroller
+        # 1. user_joined veya user_added
         if event.user_joined or event.user_added:
-            is_join = True
-            user = await event.get_user()
-            logger.info(f"Standart join: user={user.id if user else None}")
+            try:
+                user = await event.get_user()
+                if user and not user.bot:
+                    users_to_query.append((user.id, f"{user.first_name or ''} {user.last_name or ''}".strip()))
+            except:
+                pass
 
-        # Action message kontrolü (link ile katılım, istek onayı vb.)
-        if not user and hasattr(event, 'action_message') and event.action_message:
-            action = event.action_message.action
-            logger.info(f"Action tipi: {type(action).__name__}")
-            if isinstance(action, (MessageActionChatJoinedByLink, MessageActionChatAddUser, MessageActionChatJoinedByRequest)):
-                is_join = True
+        # 2. user_ids listesi
+        if not users_to_query and hasattr(event, 'user_ids') and event.user_ids:
+            for uid in event.user_ids:
                 try:
-                    user = await event.get_user()
+                    user = await client.get_entity(uid)
+                    if user and not user.bot:
+                        users_to_query.append((user.id, f"{user.first_name or ''} {user.last_name or ''}".strip()))
                 except:
-                    if hasattr(action, 'users') and action.users:
-                        for uid in action.users:
-                            try:
-                                user = await client.get_entity(uid)
-                                break
-                            except:
-                                pass
+                    users_to_query.append((uid, ""))
 
-        if is_join and user and not user.bot:
-            user_id = user.id
-            user_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+        # 3. action_message içinden
+        if not users_to_query and hasattr(event, 'action_message') and event.action_message:
+            action = event.action_message.action
+            if hasattr(action, 'users') and action.users:
+                for uid in action.users:
+                    try:
+                        user = await client.get_entity(uid)
+                        if user and not user.bot:
+                            users_to_query.append((user.id, f"{user.first_name or ''} {user.last_name or ''}".strip()))
+                    except:
+                        users_to_query.append((uid, ""))
 
+        # 4. event.user_id
+        if not users_to_query and hasattr(event, 'user_id') and event.user_id:
+            try:
+                user = await client.get_entity(event.user_id)
+                if user and not user.bot:
+                    users_to_query.append((user.id, f"{user.first_name or ''} {user.last_name or ''}".strip()))
+            except:
+                users_to_query.append((event.user_id, ""))
+
+        # Sorguları yap
+        if users_to_query:
             try:
                 chat = await event.get_chat()
-                chat_name = getattr(chat, 'title', 'Bilinmeyen Grup')
+                chat_name = getattr(chat, 'title', 'Grup')
             except:
-                chat_name = "Bilinmeyen Grup"
+                chat_name = "Grup"
 
-            logger.info(f">>> Yeni üye sorgulanıyor: {user_name} ({user_id}) - {chat_name}")
-            await send_to_sangmata(user_id, chat_name, user_name)
-        else:
-            logger.info(f"Sorgu yapılmadı: is_join={is_join}, user={user}")
+            for user_id, user_name in users_to_query:
+                logger.info(f"Yeni üye: {user_name} ({user_id}) - {chat_name}")
+                await send_to_sangmata(user_id, chat_name, user_name)
 
     except Exception as e:
         logger.error(f"Chat action hatası: {e}")
