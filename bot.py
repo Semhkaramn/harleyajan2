@@ -137,8 +137,13 @@ async def on_raw(event):
     except Exception as e:
         logger.error(f"Raw handler hatası: {e}")
 
+# O gruptan gelen TÜM mesajları logla (test)
+@client.on(events.NewMessage(chats=GROUP_ID))
+async def on_group_message(event):
+    logger.info(f"GRUP MESAJI: {event.chat_id} - {type(event.message).__name__}")
+
 # ChatAction da deneyelim (yedek)
-@client.on(events.ChatAction())
+@client.on(events.ChatAction(chats=GROUP_ID))
 async def on_chat_action(event):
     global bot_active
 
@@ -263,6 +268,14 @@ async def main():
     logger.info(f"Giriş: {me.first_name} (@{me.username}) ID: {me.id}")
     logger.info(f"Takip edilen grup: {GROUP_ID}")
     logger.info(f"Bildirim grubu: {NOTIFICATION_GROUP_ID}")
+
+    # Gruba erişimi kontrol et
+    try:
+        chat = await client.get_entity(GROUP_ID)
+        logger.info(f"Grup bulundu: {chat.title}")
+    except Exception as e:
+        logger.error(f"GRUP BULUNAMADI: {e}")
+
     logger.info("Bot hazır!")
     await client.run_until_disconnected()
 
