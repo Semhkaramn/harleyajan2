@@ -52,28 +52,36 @@ async def send_to_sangmata(user_id, source_chat_name=None, user_name=None):
         pending_queries.pop(user_id, None)
 
 # Katılım isteklerini kontrol et
+group_entity = None
+group_name = "Grup"
+
 async def check_join_requests():
-    global bot_active
+    global bot_active, group_entity, group_name
+
+    # İlk başta entity al
+    await asyncio.sleep(2)
+    try:
+        group_entity = await client.get_entity(GROUP_ID)
+        group_name = getattr(group_entity, 'title', 'Grup')
+        logger.info(f"İstek kontrolü başladı: {group_name}")
+    except Exception as e:
+        logger.error(f"Grup entity alınamadı: {e}")
+        return
 
     while True:
-        if bot_active and GROUP_ID:
+        if bot_active and group_entity:
             try:
-                # Bekleyen katılım isteklerini al
                 result = await client(GetChatInviteImportersRequest(
-                    peer=GROUP_ID,
-                    requested=True,  # Bekleyen istekler
+                    peer=group_entity,
+                    requested=True,
                     offset_date=None,
                     offset_user=None,
                     limit=50
                 ))
 
-                chat = await client.get_entity(GROUP_ID)
-                chat_name = getattr(chat, 'title', 'Grup')
-
                 for importer in result.importers:
                     user_id = importer.user_id
 
-                    # Daha önce kontrol edilmişse atla
                     if user_id in checked_requests:
                         continue
 
@@ -86,14 +94,12 @@ async def check_join_requests():
                         user_name = ""
 
                     logger.info(f"Yeni katılım isteği: {user_name} ({user_id})")
-                    await send_to_sangmata(user_id, chat_name, user_name)
+                    await send_to_sangmata(user_id, group_name, user_name)
 
             except Exception as e:
-                # Hata olursa sessizce devam et (izin hatası vb.)
-                if "CHAT_ADMIN_REQUIRED" not in str(e):
-                    logger.error(f"İstek kontrol hatası: {e}")
+                pass  # Sessiz hata
 
-        await asyncio.sleep(10)  # 10 saniyede bir kontrol
+        await asyncio.sleep(2)  # 2 saniyede bir kontrol
 
 # SangMata cevapları
 @client.on(events.NewMessage(incoming=True))
