@@ -39,6 +39,9 @@ SANGMATA_BOT = '@sangMata_BOT'
 # Bekleyen sorgular
 pending_queries = {}
 
+# Bot durumu
+bot_active = True
+
 def get_admin_ids():
     if not ADMIN_IDS:
         return []
@@ -75,7 +78,11 @@ async def get_user_id_from_username(username):
 # Gruba katılan üyeleri takip
 @client.on(events.ChatAction())
 async def on_chat_action(event):
+    global bot_active
     try:
+        if not bot_active:
+            return
+
         if event.chat_id == NOTIFICATION_GROUP_ID:
             return
 
@@ -144,6 +151,7 @@ async def on_sangmata_response(event):
 # Manuel sorgulama (ID, @username veya iletilen mesaj)
 @client.on(events.NewMessage())
 async def on_manual_query(event):
+    global bot_active
     try:
         if event.chat_id != NOTIFICATION_GROUP_ID:
             return
@@ -169,6 +177,18 @@ async def on_manual_query(event):
             return
 
         text = (event.text or "").strip()
+
+        # /dur komutu - otomatik takibi durdur
+        if text == '/dur':
+            bot_active = False
+            await event.reply("⏸ Otomatik takip durduruldu.")
+            return
+
+        # /devam komutu - otomatik takibi başlat
+        if text == '/devam':
+            bot_active = True
+            await event.reply("▶️ Otomatik takip başlatıldı.")
+            return
 
         if text.startswith('/'):
             return
