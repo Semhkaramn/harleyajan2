@@ -61,9 +61,6 @@ async def send_to_sangmata(user_id, source_chat_name=None, user_name=None):
 async def on_raw(event):
     global bot_active
 
-    if not bot_active:
-        return
-
     try:
         # Sadece yeni mesaj güncellemelerini al
         if not isinstance(event, (UpdateNewMessage, UpdateNewChannelMessage)):
@@ -71,15 +68,11 @@ async def on_raw(event):
 
         message = event.message
 
-        # Sadece servis mesajlarını kontrol et (katılım bildirimleri)
+        # Sadece servis mesajlarını kontrol et
         if not isinstance(message, MessageService):
             return
 
         action = message.action
-
-        # Katılım action'larını kontrol et
-        if not isinstance(action, (MessageActionChatJoinedByLink, MessageActionChatAddUser, MessageActionChatJoinedByRequest)):
-            return
 
         # Chat ID al
         chat_id = None
@@ -89,11 +82,22 @@ async def on_raw(event):
             elif hasattr(message.peer_id, 'chat_id'):
                 chat_id = -message.peer_id.chat_id
 
-        # Sadece GROUP_ID'yi takip et
-        if chat_id != GROUP_ID:
+        # TÜM servis mesajlarını logla
+        logger.info(f"SERVICE: {type(action).__name__} | Chat: {chat_id} | GROUP_ID: {GROUP_ID}")
+
+        # Katılım action'larını kontrol et
+        if not isinstance(action, (MessageActionChatJoinedByLink, MessageActionChatAddUser, MessageActionChatJoinedByRequest)):
             return
 
-        logger.info(f"Katılım algılandı! Chat: {chat_id}")
+        if not bot_active:
+            return
+
+        # Sadece GROUP_ID'yi takip et
+        if chat_id != GROUP_ID:
+            logger.info(f"Chat eşleşmedi, atlanıyor")
+            return
+
+        logger.info(f">>> KATILIM ALGILANDI! Chat: {chat_id}")
 
         # User ID'leri al
         user_ids = []
