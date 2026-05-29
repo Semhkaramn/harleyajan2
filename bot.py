@@ -164,7 +164,7 @@ async def on_sangmata_response(event):
 
 @client.on(events.NewMessage())
 async def on_manual_query(event):
-    """Manuel ID veya kullanıcı adı sorgulaması"""
+    """Manuel ID, kullanıcı adı veya iletilen mesaj sorgulaması"""
     try:
         # Sadece bildirim grubunda
         if event.chat_id != NOTIFICATION_GROUP_ID:
@@ -179,6 +179,22 @@ async def on_manual_query(event):
         if event.sender_id not in get_admin_ids():
             return
 
+        # İletilen mesaj kontrolü
+        if event.message.fwd_from:
+            fwd = event.message.fwd_from
+            user_id = None
+
+            # from_id'den user_id al
+            if fwd.from_id:
+                from telethon.tl.types import PeerUser
+                if isinstance(fwd.from_id, PeerUser):
+                    user_id = fwd.from_id.user_id
+
+            if user_id:
+                logger.info(f"İletilen mesajdan sorgu: {user_id}")
+                await send_to_sangmata(user_id, None, "Manuel Sorgu", "İletilen mesaj")
+            return
+
         text = (event.text or "").strip()
 
         # Komutları atla
@@ -186,7 +202,46 @@ async def on_manual_query(event):
             return
 
         # Sadece ID (sayı)
-        if re.match(r'^\d{5,15}$', text):
+        if re.match(r'^\d{5,15}
+
+# ==================== ESKİ SORGULARI TEMİZLE ====================
+
+async def cleanup_old_queries():
+    """5 dakikadan eski sorguları temizle"""
+    while True:
+        try:
+            current_time = asyncio.get_event_loop().time()
+            timeout = 300
+
+            to_remove = [
+                uid for uid, info in pending_queries.items()
+                if current_time - info["timestamp"] > timeout
+            ]
+            for uid in to_remove:
+                pending_queries.pop(uid, None)
+
+        except Exception as e:
+            logger.error(f"Temizleme hatası: {e}")
+
+        await asyncio.sleep(60)
+
+# ==================== ANA FONKSİYON ====================
+
+async def main():
+    logger.info("Bot başlatılıyor...")
+
+    await client.start()
+    me = await client.get_me()
+    logger.info(f"Giriş yapıldı: {me.first_name} (@{me.username}) - ID: {me.id}")
+
+    asyncio.create_task(cleanup_old_queries())
+
+    logger.info("Bot hazır ve çalışıyor!")
+    await client.run_until_disconnected()
+
+if __name__ == '__main__':
+    asyncio.run(main())
+, text):
             user_id = int(text)
             logger.info(f"Manuel ID sorgusu: {user_id}")
             await send_to_sangmata(user_id, None, "Manuel Sorgu", f"ID: {user_id}")
@@ -196,7 +251,46 @@ async def on_manual_query(event):
         if text.startswith('@') and len(text) > 1:
             username = text[1:]
 
-            if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]{3,31}$', username):
+            if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]{3,31}
+
+# ==================== ESKİ SORGULARI TEMİZLE ====================
+
+async def cleanup_old_queries():
+    """5 dakikadan eski sorguları temizle"""
+    while True:
+        try:
+            current_time = asyncio.get_event_loop().time()
+            timeout = 300
+
+            to_remove = [
+                uid for uid, info in pending_queries.items()
+                if current_time - info["timestamp"] > timeout
+            ]
+            for uid in to_remove:
+                pending_queries.pop(uid, None)
+
+        except Exception as e:
+            logger.error(f"Temizleme hatası: {e}")
+
+        await asyncio.sleep(60)
+
+# ==================== ANA FONKSİYON ====================
+
+async def main():
+    logger.info("Bot başlatılıyor...")
+
+    await client.start()
+    me = await client.get_me()
+    logger.info(f"Giriş yapıldı: {me.first_name} (@{me.username}) - ID: {me.id}")
+
+    asyncio.create_task(cleanup_old_queries())
+
+    logger.info("Bot hazır ve çalışıyor!")
+    await client.run_until_disconnected()
+
+if __name__ == '__main__':
+    asyncio.run(main())
+, username):
                 return
 
             logger.info(f"Manuel kullanıcı adı sorgusu: @{username}")
