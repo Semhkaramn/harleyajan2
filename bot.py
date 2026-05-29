@@ -1,21 +1,19 @@
 """
-Telegram Grup Üye Takip Botu
-- Kullanıcı adı, isim, soyisim değişikliklerini takip eder
-- Değişiklikleri PostgreSQL veritabanına kaydeder
-- Değişiklik olduğunda gruba bildirim gönderir
-
-Heroku + GitHub deployment için hazırlanmıştır.
+SangMata Entegrasyonlu Telegram Kullanıcı Geçmişi Botu
+- Gruba katılan kullanıcıların ID'sini @sangMata_BOT'a gönderir
+- Gelen cevabı gruba iletir
+- /dur ve /başlat komutlarıyla grup bazında kontrol
+- ID veya kullanıcı adı ile manuel sorgulama
 """
 
 import os
 import asyncio
 import logging
-from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import psycopg2
-from psycopg2.extras import RealDictCursor
+from telethon.tl.types import PeerUser, User
+from telethon.tl.functions.users import GetFullUserRequest
+import re
 
 # Logging ayarları
 logging.basicConfig(
@@ -28,11 +26,17 @@ logger = logging.getLogger(__name__)
 API_ID = int(os.getenv('API_ID', '0'))
 API_HASH = os.getenv('API_HASH', '')
 SESSION_STRING = os.getenv('SESSION_STRING', '')
-GROUP_ID = int(os.getenv('GROUP_ID', '0'))
-NOTIFICATION_GROUP_ID = int(os.getenv('NOTIFICATION_GROUP_ID', '0'))
-DATABASE_URL = os.getenv('DATABASE_URL', '')
-CHECK_INTERVAL_MINUTES = int(os.getenv('CHECK_INTERVAL_MINUTES', '30'))
 ADMIN_IDS = os.getenv('ADMIN_IDS', '')
+
+# SangMata Bot
+SANGMATA_BOT = '@sangMata_BOT'
+
+# Aktif gruplar (bellekte tutulur)
+active_groups = set()
+# Bekleyen sorgular: {user_id: {"chat_id": ..., "timestamp": ...}}
+pending_queries = {}
+# Bekleyen manuel sorgular: {query_user_id: {"chat_id": ..., "original_user_id": ...}}
+pending_manual_queries = {}
 
 def get_admin_ids() -> list:
     """Admin ID'lerini al"""
@@ -40,390 +44,343 @@ def get_admin_ids() -> list:
         return []
     return [int(x.strip()) for x in ADMIN_IDS.split(',') if x.strip()]
 
-# ==================== VERİTABANI İŞLEMLERİ ====================
-
-def get_db_connection():
-    """PostgreSQL bağlantısı (Neon.tech)"""
-    conn = psycopg2.connect(
-        DATABASE_URL,
-        sslmode='require',
-        cursor_factory=RealDictCursor,
-        connect_timeout=10
-    )
-    conn.autocommit = False
-    return conn
-
-def init_database():
-    """Tabloları oluştur"""
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS members (
-            user_id BIGINT PRIMARY KEY,
-            username VARCHAR(255),
-            first_name VARCHAR(255),
-            last_name VARCHAR(255),
-            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS changes (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL,
-            change_type VARCHAR(50) NOT NULL,
-            old_value VARCHAR(255),
-            new_value VARCHAR(255),
-            changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_changes_user_id ON changes(user_id)')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_changes_date ON changes(changed_at DESC)')
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    logger.info("Veritabanı hazır")
-
-def get_member(user_id: int):
-    """Üye bilgilerini al"""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('SELECT * FROM members WHERE user_id = %s', (user_id,))
-    result = cur.fetchone()
-    cur.close()
-    conn.close()
-    return dict(result) if result else None
-
-def save_member(user_id: int, username: str, first_name: str, last_name: str):
-    """Üye kaydet/güncelle"""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        INSERT INTO members (user_id, username, first_name, last_name, last_updated)
-        VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
-        ON CONFLICT (user_id) DO UPDATE SET
-            username = EXCLUDED.username,
-            first_name = EXCLUDED.first_name,
-            last_name = EXCLUDED.last_name,
-            last_updated = CURRENT_TIMESTAMP
-    ''', (user_id, username, first_name, last_name))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-def save_change(user_id: int, change_type: str, old_value: str, new_value: str):
-    """Değişiklik kaydet"""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute('''
-        INSERT INTO changes (user_id, change_type, old_value, new_value)
-        VALUES (%s, %s, %s, %s)
-    ''', (user_id, change_type, old_value, new_value))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-# ==================== TELEGRAM İŞLEMLERİ ====================
+# ==================== TELEGRAM CLIENT ====================
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-async def get_all_participants():
-    """Tüm grup üyelerini al (40k+ için optimize)"""
-    logger.info("Üyeler alınıyor...")
-    participants = []
-
+async def send_to_sangmata(user_id: int, chat_id: int, manual: bool = False, original_sender: int = None):
+    """SangMata'ya kullanıcı ID'si gönder"""
     try:
-        async for user in client.iter_participants(GROUP_ID, aggressive=True):
-            participants.append({
-                'user_id': user.id,
-                'username': user.username,
-                'first_name': user.first_name or '',
-                'last_name': user.last_name or ''
-            })
+        # Pending query kaydet
+        if manual and original_sender:
+            pending_manual_queries[user_id] = {
+                "chat_id": chat_id,
+                "original_sender": original_sender,
+                "timestamp": asyncio.get_event_loop().time()
+            }
+        else:
+            pending_queries[user_id] = {
+                "chat_id": chat_id,
+                "timestamp": asyncio.get_event_loop().time()
+            }
 
-            if len(participants) % 5000 == 0:
-                logger.info(f"{len(participants)} üye alındı...")
-                await asyncio.sleep(1)  # Rate limit
+        # SangMata'ya ID gönder
+        await client.send_message(SANGMATA_BOT, str(user_id))
+        logger.info(f"SangMata'ya gönderildi: {user_id} (Grup: {chat_id})")
 
     except Exception as e:
-        logger.error(f"Üye alma hatası: {e}")
+        logger.error(f"SangMata'ya gönderme hatası: {e}")
+        # Hata durumunda pending'den kaldır
+        pending_queries.pop(user_id, None)
+        pending_manual_queries.pop(user_id, None)
 
-    logger.info(f"Toplam {len(participants)} üye")
-    return participants
+async def get_user_id_from_username(username: str) -> int:
+    """Kullanıcı adından ID al"""
+    try:
+        # @ işaretini kaldır
+        username = username.lstrip('@')
+        user = await client.get_entity(username)
+        return user.id
+    except Exception as e:
+        logger.error(f"Kullanıcı adı çözümleme hatası: {e}")
+        return None
 
-async def check_for_changes():
-    """Değişiklikleri kontrol et"""
-    logger.info("Kontrol başlıyor...")
+# ==================== EVENT HANDLERS ====================
 
-    participants = await get_all_participants()
-    changes_detected = []
-    new_members = 0
+@client.on(events.ChatAction())
+async def on_chat_action(event):
+    """Gruba katılan kullanıcıları takip et"""
+    try:
+        # Sadece aktif gruplarda çalış
+        chat_id = event.chat_id
+        if chat_id not in active_groups:
+            return
 
-    for p in participants:
-        existing = get_member(p['user_id'])
+        # Yeni üye katıldıysa
+        if event.user_joined or event.user_added:
+            user = await event.get_user()
+            if user and not user.bot:
+                user_id = user.id
+                logger.info(f"Yeni üye katıldı: {user_id} (Grup: {chat_id})")
 
-        if existing is None:
-            save_member(p['user_id'], p['username'], p['first_name'], p['last_name'])
-            new_members += 1
-            continue
+                # SangMata'ya gönder
+                await send_to_sangmata(user_id, chat_id)
 
-        changes = []
+    except Exception as e:
+        logger.error(f"Chat action hatası: {e}")
 
-        # Username
-        if existing['username'] != p['username']:
-            old_val = existing['username'] or '(yok)'
-            new_val = p['username'] or '(yok)'
-            save_change(p['user_id'], 'username', old_val, new_val)
-            changes.append(('K.Adı', old_val, new_val))
+@client.on(events.NewMessage(from_users=SANGMATA_BOT))
+async def on_sangmata_response(event):
+    """SangMata'dan gelen cevapları işle"""
+    try:
+        message = event.message
+        text = message.text or ""
 
-        # İsim
-        if existing['first_name'] != p['first_name']:
-            old_val = existing['first_name'] or '(yok)'
-            new_val = p['first_name'] or '(yok)'
-            save_change(p['user_id'], 'first_name', old_val, new_val)
-            changes.append(('İsim', old_val, new_val))
+        # Mesajdan user_id çıkar (örn: "8179834359 için geçmiş")
+        match = re.search(r'(\d{5,15})\s+için geçmiş', text)
+        if not match:
+            return
 
-        # Soyisim
-        if existing['last_name'] != p['last_name']:
-            old_val = existing['last_name'] or '(yok)'
-            new_val = p['last_name'] or '(yok)'
-            save_change(p['user_id'], 'last_name', old_val, new_val)
-            changes.append(('Soyisim', old_val, new_val))
+        user_id = int(match.group(1))
 
-        if changes:
-            save_member(p['user_id'], p['username'], p['first_name'], p['last_name'])
-            changes_detected.append({
-                'user_id': p['user_id'],
-                'username': p['username'],
-                'first_name': p['first_name'],
-                'last_name': p['last_name'],
-                'changes': changes
-            })
+        # Önce manuel sorgulardan kontrol et
+        if user_id in pending_manual_queries:
+            query_info = pending_manual_queries.pop(user_id)
+            chat_id = query_info["chat_id"]
 
-    logger.info(f"Tamamlandı: {new_members} yeni, {len(changes_detected)} değişiklik")
-
-    if changes_detected:
-        await send_notifications(changes_detected)
-
-async def send_notifications(changes_detected: list):
-    """Gruba bildirim gönder"""
-    batch_size = 10
-
-    for i in range(0, len(changes_detected), batch_size):
-        batch = changes_detected[i:i+batch_size]
-
-        message = "🔄 **Değişiklik Tespit Edildi**\n\n"
-
-        for change in batch:
-            name = f"{change['first_name']} {change['last_name']}".strip()
-            user_link = f"[{name}](tg://user?id={change['user_id']})"
-
-            if change['username']:
-                user_link += f" (@{change['username']})"
-
-            message += f"👤 {user_link}\n"
-
-            for ctype, old_v, new_v in change['changes']:
-                message += f"   • {ctype}: `{old_v}` → `{new_v}`\n"
-
-            message += "\n"
-
-        try:
+            # Cevabı gruba ilet
             await client.send_message(
-                NOTIFICATION_GROUP_ID,
-                message,
-                parse_mode='markdown',
-                link_preview=False
+                chat_id,
+                f"🔍 **Sorgulama Sonucu**\n\n{text}",
+                parse_mode='markdown'
             )
-        except Exception as e:
-            logger.error(f"Bildirim hatası: {e}")
+            logger.info(f"Manuel sorgu cevabı iletildi: {user_id} -> {chat_id}")
 
-        await asyncio.sleep(2)
+        # Otomatik sorgular (yeni üye katılımı)
+        elif user_id in pending_queries:
+            query_info = pending_queries.pop(user_id)
+            chat_id = query_info["chat_id"]
+
+            # Cevabı gruba ilet
+            await client.send_message(
+                chat_id,
+                f"👋 **Yeni Üye Geçmişi**\n\n{text}",
+                parse_mode='markdown'
+            )
+            logger.info(f"Otomatik sorgu cevabı iletildi: {user_id} -> {chat_id}")
+
+    except Exception as e:
+        logger.error(f"SangMata cevap işleme hatası: {e}")
 
 # ==================== KOMUTLAR ====================
 
-@client.on(events.NewMessage(pattern='/kontrol'))
-async def cmd_kontrol(event):
-    """Manuel kontrol"""
-    if event.sender_id not in get_admin_ids():
-        return
-
-    msg = await event.reply("🔍 Kontrol başlatılıyor...")
-    await check_for_changes()
-    await msg.edit("✅ Kontrol tamamlandı!")
-
-@client.on(events.NewMessage(pattern='/istatistik'))
-async def cmd_istatistik(event):
-    """İstatistikler"""
-    if event.sender_id not in get_admin_ids():
-        return
-
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute('SELECT COUNT(*) as c FROM members')
-    total = cur.fetchone()['c']
-
-    cur.execute('SELECT COUNT(*) as c FROM changes')
-    changes = cur.fetchone()['c']
-
-    cur.execute('''
-        SELECT COUNT(*) as c FROM changes
-        WHERE changed_at > CURRENT_TIMESTAMP - INTERVAL '24 hours'
-    ''')
-    today = cur.fetchone()['c']
-
-    cur.close()
-    conn.close()
-
-    await event.reply(f"""📊 **İstatistikler**
-
-👥 Kayıtlı Üye: `{total:,}`
-📝 Toplam Değişiklik: `{changes:,}`
-🕐 Son 24 Saat: `{today}` değişiklik
-⏰ Kontrol Aralığı: `{CHECK_INTERVAL_MINUTES}` dk""", parse_mode='markdown')
-
-@client.on(events.NewMessage(pattern='/ara'))
-async def cmd_ara(event):
-    """Üye ara"""
-    if event.sender_id not in get_admin_ids():
-        return
-
+@client.on(events.NewMessage(pattern=r'^/başlat$|^/baslat$'))
+async def cmd_baslat(event):
+    """Botu grupta aktifleştir"""
     try:
-        query = event.text.split(' ', 1)[1].strip()
-    except:
-        await event.reply("Kullanım: `/ara isim`", parse_mode='markdown')
-        return
+        # Sadece grup/süpergrup
+        if not event.is_group:
+            return
 
-    conn = get_db_connection()
-    cur = conn.cursor()
+        # Admin kontrolü
+        if event.sender_id not in get_admin_ids():
+            return
 
-    cur.execute('''
-        SELECT * FROM members
-        WHERE username ILIKE %s OR first_name ILIKE %s OR last_name ILIKE %s
-        LIMIT 15
-    ''', (f'%{query}%', f'%{query}%', f'%{query}%'))
+        chat_id = event.chat_id
+        active_groups.add(chat_id)
 
-    results = cur.fetchall()
-    cur.close()
-    conn.close()
+        await event.reply(
+            "✅ **Bot Aktifleştirildi!**\n\n"
+            "• Gruba katılan üyelerin geçmişi sorgulanacak\n"
+            "• Kullanıcı ID veya @kullaniciadi yazarak sorgulama yapabilirsiniz\n"
+            "• Durdurmak için `/dur` yazın",
+            parse_mode='markdown'
+        )
+        logger.info(f"Bot aktifleştirildi: {chat_id}")
 
-    if not results:
-        await event.reply("❌ Sonuç yok")
-        return
+    except Exception as e:
+        logger.error(f"Başlat komutu hatası: {e}")
 
-    msg = f"🔍 **Sonuçlar:** `{query}`\n\n"
-    for r in results:
-        name = f"{r['first_name']} {r['last_name']}".strip()
-        msg += f"• [{name}](tg://user?id={r['user_id']})"
-        if r['username']:
-            msg += f" @{r['username']}"
-        msg += "\n"
-
-    await event.reply(msg, parse_mode='markdown')
-
-@client.on(events.NewMessage(pattern='/gecmis'))
-async def cmd_gecmis(event):
-    """Üye geçmişi"""
-    if event.sender_id not in get_admin_ids():
-        return
-
+@client.on(events.NewMessage(pattern=r'^/dur$'))
+async def cmd_dur(event):
+    """Botu grupta durdur"""
     try:
-        query = event.text.split(' ', 1)[1].strip()
-    except:
-        await event.reply("Kullanım: `/gecmis kullaniciadi`", parse_mode='markdown')
-        return
+        if not event.is_group:
+            return
 
-    conn = get_db_connection()
-    cur = conn.cursor()
+        if event.sender_id not in get_admin_ids():
+            return
 
-    cur.execute('''
-        SELECT * FROM members
-        WHERE username ILIKE %s OR first_name ILIKE %s
-        LIMIT 1
-    ''', (f'%{query}%', f'%{query}%'))
+        chat_id = event.chat_id
+        active_groups.discard(chat_id)
 
-    member = cur.fetchone()
+        await event.reply(
+            "⏹️ **Bot Durduruldu!**\n\n"
+            "Tekrar başlatmak için `/başlat` yazın",
+            parse_mode='markdown'
+        )
+        logger.info(f"Bot durduruldu: {chat_id}")
 
-    if not member:
-        await event.reply("❌ Üye bulunamadı")
-        cur.close()
-        conn.close()
-        return
+    except Exception as e:
+        logger.error(f"Dur komutu hatası: {e}")
 
-    cur.execute('''
-        SELECT * FROM changes WHERE user_id = %s
-        ORDER BY changed_at DESC LIMIT 20
-    ''', (member['user_id'],))
+@client.on(events.NewMessage(pattern=r'^/durum$'))
+async def cmd_durum(event):
+    """Bot durumunu göster"""
+    try:
+        if not event.is_group:
+            return
 
-    history = cur.fetchall()
-    cur.close()
-    conn.close()
+        if event.sender_id not in get_admin_ids():
+            return
 
-    name = f"{member['first_name']} {member['last_name']}".strip()
+        chat_id = event.chat_id
+        is_active = chat_id in active_groups
 
-    if not history:
-        await event.reply(f"ℹ️ `{name}` için geçmiş yok", parse_mode='markdown')
-        return
+        status = "✅ Aktif" if is_active else "⏹️ Durduruldu"
+        pending_count = len(pending_queries) + len(pending_manual_queries)
 
-    msg = f"📜 **{name}** Geçmişi\n"
-    if member['username']:
-        msg += f"@{member['username']}\n"
-    msg += "\n"
+        await event.reply(
+            f"📊 **Bot Durumu**\n\n"
+            f"• Bu grupta: {status}\n"
+            f"• Aktif grup sayısı: `{len(active_groups)}`\n"
+            f"• Bekleyen sorgu: `{pending_count}`",
+            parse_mode='markdown'
+        )
 
-    types = {'username': 'K.Adı', 'first_name': 'İsim', 'last_name': 'Soyisim'}
+    except Exception as e:
+        logger.error(f"Durum komutu hatası: {e}")
 
-    for h in history:
-        date = h['changed_at'].strftime('%d.%m.%Y %H:%M')
-        t = types.get(h['change_type'], h['change_type'])
-        msg += f"`{date}` {t}: `{h['old_value']}` → `{h['new_value']}`\n"
-
-    await event.reply(msg, parse_mode='markdown')
-
-@client.on(events.NewMessage(pattern='/yardim'))
+@client.on(events.NewMessage(pattern=r'^/yardım$|^/yardim$'))
 async def cmd_yardim(event):
-    """Yardım"""
-    if event.sender_id not in get_admin_ids():
-        return
+    """Yardım mesajı"""
+    try:
+        if not event.is_group:
+            return
 
-    await event.reply("""📖 **Bot Komutları**
+        if event.sender_id not in get_admin_ids():
+            return
 
-`/kontrol` - Manuel kontrol başlat
-`/istatistik` - İstatistikleri göster
-`/ara <isim>` - Üye ara
-`/gecmis <isim>` - Üye geçmişi
-`/yardim` - Bu mesaj""", parse_mode='markdown')
+        await event.reply(
+            "📖 **Bot Komutları**\n\n"
+            "`/başlat` - Botu bu grupta aktifleştir\n"
+            "`/dur` - Botu bu grupta durdur\n"
+            "`/durum` - Bot durumunu göster\n"
+            "`/yardım` - Bu mesaj\n\n"
+            "**Sorgulama:**\n"
+            "• `123456789` - ID ile sorgula\n"
+            "• `@kullaniciadi` - Kullanıcı adı ile sorgula\n\n"
+            "Bot aktifken gruba katılan üyelerin geçmişi otomatik sorgulanır.",
+            parse_mode='markdown'
+        )
+
+    except Exception as e:
+        logger.error(f"Yardım komutu hatası: {e}")
+
+# ==================== MANUEL SORGULAMA ====================
+
+@client.on(events.NewMessage())
+async def on_message(event):
+    """Manuel ID veya kullanıcı adı sorgulaması"""
+    try:
+        # Sadece aktif gruplarda
+        if not event.is_group:
+            return
+
+        chat_id = event.chat_id
+        if chat_id not in active_groups:
+            return
+
+        # Admin kontrolü
+        if event.sender_id not in get_admin_ids():
+            return
+
+        text = (event.text or "").strip()
+
+        # Komutları atla
+        if text.startswith('/'):
+            return
+
+        # Sadece ID (10 haneli sayı)
+        if re.match(r'^\d{5,15}$', text):
+            user_id = int(text)
+            logger.info(f"Manuel ID sorgusu: {user_id}")
+
+            # Bilgi mesajı
+            info_msg = await event.reply(f"🔍 `{user_id}` sorgulanıyor...", parse_mode='markdown')
+
+            # SangMata'ya gönder
+            await send_to_sangmata(user_id, chat_id, manual=True, original_sender=event.sender_id)
+
+            # Bilgi mesajını sil (3 saniye sonra)
+            await asyncio.sleep(3)
+            try:
+                await info_msg.delete()
+            except:
+                pass
+
+            return
+
+        # Kullanıcı adı (@username)
+        if text.startswith('@') and len(text) > 1:
+            username = text[1:]  # @ işaretini kaldır
+
+            # Geçerli kullanıcı adı kontrolü
+            if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]{4,31}$', username):
+                return
+
+            logger.info(f"Manuel kullanıcı adı sorgusu: @{username}")
+
+            # Bilgi mesajı
+            info_msg = await event.reply(f"🔍 `@{username}` sorgulanıyor...", parse_mode='markdown')
+
+            # Kullanıcı adından ID al
+            user_id = await get_user_id_from_username(username)
+
+            if user_id:
+                # SangMata'ya gönder
+                await send_to_sangmata(user_id, chat_id, manual=True, original_sender=event.sender_id)
+            else:
+                await event.reply(f"❌ `@{username}` bulunamadı!", parse_mode='markdown')
+
+            # Bilgi mesajını sil
+            await asyncio.sleep(3)
+            try:
+                await info_msg.delete()
+            except:
+                pass
+
+            return
+
+    except Exception as e:
+        logger.error(f"Manuel sorgulama hatası: {e}")
+
+# ==================== ESKİ SORGULARI TEMİZLE ====================
+
+async def cleanup_old_queries():
+    """5 dakikadan eski sorguları temizle"""
+    while True:
+        try:
+            current_time = asyncio.get_event_loop().time()
+            timeout = 300  # 5 dakika
+
+            # Pending queries
+            to_remove = [
+                uid for uid, info in pending_queries.items()
+                if current_time - info["timestamp"] > timeout
+            ]
+            for uid in to_remove:
+                pending_queries.pop(uid, None)
+                logger.info(f"Eski sorgu temizlendi: {uid}")
+
+            # Manual queries
+            to_remove = [
+                uid for uid, info in pending_manual_queries.items()
+                if current_time - info["timestamp"] > timeout
+            ]
+            for uid in to_remove:
+                pending_manual_queries.pop(uid, None)
+                logger.info(f"Eski manuel sorgu temizlendi: {uid}")
+
+        except Exception as e:
+            logger.error(f"Temizleme hatası: {e}")
+
+        await asyncio.sleep(60)  # Her 1 dakikada kontrol
 
 # ==================== ANA FONKSİYON ====================
 
 async def main():
     logger.info("Bot başlatılıyor...")
 
-    init_database()
-
     await client.start()
     me = await client.get_me()
     logger.info(f"Giriş yapıldı: {me.first_name} (@{me.username})")
+    logger.info(f"Admin ID'leri: {get_admin_ids()}")
 
-    # Scheduler
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        check_for_changes,
-        'interval',
-        minutes=CHECK_INTERVAL_MINUTES,
-        id='check'
-    )
-    scheduler.start()
-    logger.info(f"Zamanlayıcı: Her {CHECK_INTERVAL_MINUTES} dakikada kontrol")
+    # Eski sorguları temizleme görevi başlat
+    asyncio.create_task(cleanup_old_queries())
 
-    # İlk kontrol
-    await check_for_changes()
-
-    logger.info("Bot hazır!")
+    logger.info("Bot hazır! Gruplarda /başlat yazarak aktifleştirin.")
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
