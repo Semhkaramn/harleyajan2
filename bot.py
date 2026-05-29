@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 API_ID = int(os.getenv('API_ID', '0'))
 API_HASH = os.getenv('API_HASH', '')
 SESSION_STRING = os.getenv('SESSION_STRING', '')
-NOTIFICATION_GROUP_ID = int(os.getenv('NOTIFICATION_GROUP_ID', '0'))
+GROUP_ID = int(os.getenv('GROUP_ID', '0'))  # Takip edilecek grup
+NOTIFICATION_GROUP_ID = int(os.getenv('NOTIFICATION_GROUP_ID', '0'))  # Bildirimlerin gideceği grup
 ADMIN_IDS = os.getenv('ADMIN_IDS', '')
 
 SANGMATA_BOT = '@sangMata_BOT'
@@ -88,8 +89,11 @@ async def on_raw(event):
             elif hasattr(message.peer_id, 'chat_id'):
                 chat_id = -message.peer_id.chat_id
 
-        if chat_id == NOTIFICATION_GROUP_ID:
+        # Sadece GROUP_ID'yi takip et
+        if chat_id != GROUP_ID:
             return
+
+        logger.info(f"Katılım algılandı! Chat: {chat_id}")
 
         # User ID'leri al
         user_ids = []
@@ -138,8 +142,11 @@ async def on_chat_action(event):
         return
 
     try:
-        if event.chat_id == NOTIFICATION_GROUP_ID:
+        # Sadece GROUP_ID'yi takip et
+        if event.chat_id != GROUP_ID:
             return
+
+        logger.info(f"ChatAction algılandı! Chat: {event.chat_id}")
 
         if not (event.user_joined or event.user_added):
             return
@@ -250,6 +257,7 @@ async def main():
     await client.start()
     me = await client.get_me()
     logger.info(f"Giriş: {me.first_name} (@{me.username}) ID: {me.id}")
+    logger.info(f"Takip edilen grup: {GROUP_ID}")
     logger.info(f"Bildirim grubu: {NOTIFICATION_GROUP_ID}")
     logger.info("Bot hazır!")
     await client.run_until_disconnected()
